@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Supply Chain Inventory & Demand Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<style>
+  :root { --bg: #0f172a; --card: #1e293b; --accent: #38bdf8; --text: #e2e8f0; --danger: #f87171; --ok: #4ade80; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Segoe UI', Arial, sans-serif; background: var(--bg); color: var(--text); }
+  header { padding: 20px 32px; border-bottom: 1px solid #334155; }
+  header h1 { margin: 0; font-size: 22px; }
+  header p { margin: 4px 0 0; color: #94a3b8; font-size: 13px; }
+  .container { padding: 24px 32px; }
+  .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 28px; }
+  .card { background: var(--card); border-radius: 10px; padding: 18px; border: 1px solid #334155; }
+  .card .label { font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: .04em; }
+  .card .value { font-size: 26px; font-weight: 600; margin-top: 6px; }
+  .low { color: var(--danger); }
+  .grid-2 { display: grid; grid-template-columns: 1.3fr 1fr; gap: 20px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #334155; }
+  th { color: #94a3b8; font-weight: 500; }
+  .badge { padding: 2px 8px; border-radius: 12px; font-size: 11px; }
+  .badge.low { background: rgba(248,113,113,.15); color: var(--danger); }
+  .badge.ok { background: rgba(74,222,128,.15); color: var(--ok); }
+  select, button { background: var(--card); color: var(--text); border: 1px solid #334155; border-radius: 6px; padding: 6px 10px; }
+  h2 { font-size: 15px; color: #cbd5e1; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Supply Chain Inventory & Demand Dashboard</h1>
+  <p>Multi-warehouse stock levels, reorder alerts, and ML-based demand forecasting</p>
+</header>
+
+<div class="container">
+  <div class="summary-grid" id="summary"></div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h2>Demand Forecast</h2>
+      <select id="productSelect"></select>
+      <canvas id="forecastChart" height="220"></canvas>
+    </div>
+    <div class="card">
+      <h2>Inventory by Warehouse</h2>
+      <table id="inventoryTable">
+        <thead><tr><th>Product</th><th>Warehouse</th><th>Qty</th><th>Status</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = "http://localhost:5000/api";
+let chart;
+
+async function loadSummary() {
+  const res = await fetch(`${API}/dashboard/summary`);
+  const s = await res.json();
+  document.getElementById("summary").innerHTML = `
+    <div class="card"><div class="label">Products</div><div class="value">${s.total_products}</div></div>
+    <div class="card"><div class="label">Warehouses</div><div class="value">${s.total_warehouses}</div></div>
+    <div class="card"><div class="label">Units on Hand</div><div class="value">${s.total_units_on_hand}</div></div>
+    <div class="card"><div class="label">Inventory Value</div><div class="value">₹${s.total_inventory_value.toLocaleString()}</div></div>
+    <div class="card"><div class="label">Low Stock Alerts</div><div class="value low">${s.low_stock_count}</div></div>
+  `;
+}
+
+async function loadInventory() {
+  const res = await fetch(`${API}/inventory`);
+  const rows = await res.json();
+  const tbody = document.querySelector("#inventoryTable tbody");
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td>${r.product_name} (${r.sku})</td>
+      <td>${r.warehouse_name}</td>
+      <td>${r.quantity_on_hand}</td>
+      <td><span class="badge ${r.low_stock ? 'low' : 'ok'}">${r.low_stock ? 'LOW STOCK' : 'OK'}</span></td>
+    </tr>`).join("");
+}
+
+async function loadProducts() {
+  const res = await fetch(`${API}/products`);
+  const products = await res.json();
+  const select = document.getElementById("productSelect");
+  select.innerHTML = products.map(p => `<option value="${p.id}">${p.name}</option>`).join("");
+  select.addEventListener("change", () => loadForecast(select.value));
+  if (products.length) loadForecast(products[0].id);
+}
+
+async function loadForecast(productId) {
+  const res = await fetch(`${API}/forecast/${productId}?horizon_days=7`);
+  const data = await res.json();
+  const labels = [...data.history.map(h => h.date), ...data.forecast.map(f => f.date)];
+  const historyData = data.history.map(h => h.quantity);
+  const forecastData = [...Array(data.history.length).fill(null), ...data.forecast.map(f => f.predicted_quantity)];
+
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById("forecastChart"), {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        { label: "Historical Demand", data: historyData, borderColor: "#38bdf8", tension: 0.3, pointRadius: 0 },
+        { label: "Forecast (7-day)", data: forecastData, borderColor: "#f472b6", borderDash: [5,5], tension: 0.3, pointRadius: 2 },
+      ]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { color: "#e2e8f0" } } },
+      scales: {
+        x: { ticks: { color: "#94a3b8", maxTicksLimit: 10 }, grid: { color: "#334155" } },
+        y: { ticks: { color: "#94a3b8" }, grid: { color: "#334155" } }
+      }
+    }
+  });
+}
+
+loadSummary();
+loadInventory();
+loadProducts();
+</script>
+
+</body>
+</html>
